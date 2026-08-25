@@ -476,8 +476,31 @@ def load_universe(sheet_csv_url: Optional[str]) -> tuple[pd.DataFrame, str]:
                 return DEMO_UNIVERSE.copy(), "⚠️ Sheet loaded but empty — using demo fallback"
             return df, f"✅ Google Sheet ({len(df)} rows)"
         except Exception as exc:
-            return DEMO_UNIVERSE.copy(), f"⚠️ Could not load sheet ({exc}) — using demo fallback"
+            # Log server-side only (visible in Streamlit Cloud's app logs to
+            # repo-write-access users) — never echo the raw exception into the
+            # UI, since it can contain the fetch URL itself.
+            print(f"[load_universe] failed to load configured sheet: {exc}")
+            return DEMO_UNIVERSE.copy(), "⚠️ Could not load the configured sheet (check its URL/sharing settings) — using demo fallback"
     return DEMO_UNIVERSE.copy(), f"ℹ️ Demo universe ({len(DEMO_UNIVERSE)} rows) — no Google Sheet configured"
+
+
+def resolve_sheet_url() -> tuple[Optional[str], bool]:
+    """
+    Reads GOOGLE_SHEET_CSV_URL from Secrets (preferred) or an env var
+    (local dev). Deliberately never renders the raw URL into the UI —
+    since the sheet is "anyone with the link," the URL itself is
+    effectively a key to your raw data, and a public Streamlit app's
+    sidebar is visible to anyone who opens it. Returns (url, from_secrets).
+    """
+    secret_url = None
+    try:
+        secret_url = st.secrets.get("GOOGLE_SHEET_CSV_URL")
+    except Exception:
+        pass
+    if secret_url:
+        return secret_url, True
+    env_url = os.environ.get("GOOGLE_SHEET_CSV_URL")
+    return (env_url, False) if env_url else (None, False)
 
 
 def format_ticker(symbol: str, market: str) -> str:
@@ -614,12 +637,21 @@ def main() -> None:
         st.warning("⚠️ No GEMINI_API_KEY found (Secrets or env var) — the NL screener will fall back to an unfiltered scan.")
 
     st.sidebar.header("🌐 Data source")
-    default_sheet_url = st.secrets.get("GOOGLE_SHEET_CSV_URL", "") if hasattr(st, "secrets") else ""
-    sheet_url = st.sidebar.text_input(
-        "Google Sheet CSV URL (optional)", value=default_sheet_url,
-        help="File > Share > Anyone with link > Viewer, then use the .../export?format=csv&gid=... URL. "
-             "Leave blank to use the small built-in demo universe.",
-    )
+    secret_url, from_secrets = resolve_sheet_url()
+    if from_secrets:
+        sheet_url = secret_url
+        st.sidebar.caption("🔒 Universe data source configured via Secrets")
+    else:
+        # No secret configured — fall back to a visible field so local
+        # development / first-time setup still works. Once you add
+        # GOOGLE_SHEET_CSV_URL to Streamlit Cloud's Secrets, this field
+        # disappears entirely and the URL never renders into the page.
+        sheet_url = st.sidebar.text_input(
+            "Google Sheet CSV URL (dev only — move to Secrets for production)", value="",
+            help="File > Share > Anyone with link > Viewer, then use the .../export?format=csv&gid=... URL. "
+                 "Leave blank to use the small built-in demo universe. Once you set GOOGLE_SHEET_CSV_URL in "
+                 "Streamlit Cloud's Secrets, this box disappears and the URL stays server-side only.",
+        )
     universe_df, source_label = load_universe(sheet_url or None)
     st.sidebar.caption(source_label)
 
